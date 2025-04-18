@@ -138,6 +138,7 @@ def process_data(
     input_jsonl: str = typer.Option(..., "--input-file"),
     output_jsonl: str = typer.Option(..., "--output-file"),
     model_name_or_path: str = typer.Option(..., "--model-name-or-path"),
+    max_sample_num_tokens: int = typer.Option(2147483647, "--max-sample-length", help="max number of tokens in a sample, samples beyond this will be removed"),
     string_for_printing_masks: str = typer.Option("<|mAsK|>", "--string-for-printing-masks"),
 ):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -153,6 +154,7 @@ def process_data(
     )
     dataset_with_input_ids = dataset_with_input_ids.filter(lambda x: not x['error'], num_proc=64)
     print("\033[38;5;196m" + f"Number of samples with errors: {len(dataset) - len(dataset_with_input_ids)}" + "\033[0m")
+    dataset_with_input_ids = dataset_with_input_ids.filter(lambda x: x['len'] <= max_sample_num_tokens, num_proc=64)
     
     dataset_with_labels = dataset_with_input_ids.map(
         lambda x: make_labels_from_input_ids(x, assistant_tk_ids, user_tk_ids),
@@ -178,5 +180,8 @@ if __name__ == "__main__":
     app()
 
 '''
-python process_data.py --input-file /tmp/my_training_output/train.jsonl --output-file /tmp/my_training_output/train_processed.jsonl --model-name-or-path Qwen/Qwen2.5-1.5B-Instruct --string-for-printing-masks "<|mAsK|>"
+python process_data.py --input-file /new_data/knowledge_rh/quality/training_mix/entigraph_knowledge1.0_phi4_first_24_n_5_5_percent.jsonl \
+      --output-file /dev/shm/knowledge_processed.jsonl \
+      --model-name-or-path meta-llama/Llama-3.1-8B-Instruct \
+      --string-for-printing-masks "<|mAsK|>"
 '''
