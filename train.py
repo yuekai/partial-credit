@@ -40,7 +40,7 @@ def save_model(model, accelerator, samples_seen, output_dir, model_name_or_path)
     output_dir = Path(output_dir) / "hf_format" / f"samples_{samples_seen}"
     accelerator.save_model(model,
                            str(output_dir),
-                            max_shard_size="20GB",
+                            max_shard_size="5GB",
                             safe_serialization=True,
     )
     if accelerator.is_main_process:
@@ -115,7 +115,7 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
                     "num_loss_counted_tokens": bm['num_loss_counted_tokens'],
                     "num_total_tokens": bm['num_total_tokens'],
                     "grad_accum": grad_accum+1,
-                    "avg_time_per_minibatch": bm['time_per_minibatch']/(grad_accum+1),
+                    "avg_time_per_minibatch": bm['time_per_minibatch']/(grad_accum+1)/int(os.environ["WORLD_SIZE"]),
                     "time_per_batch": batch_time,
                     "tokens_per_second": bm['num_total_tokens']/batch_time,
                     "total_samples_accumulated": total_samples_accumulated, 
@@ -125,6 +125,7 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
                 batch_metrics
             )
         
+        torch.distributed.barrier()
         if total_samples_accumulated - last_saved_samples >= min_samples_per_checkpoint:
             save_model(model, accelerator, total_samples_accumulated, output_dir, model_name_or_path)
             last_saved_samples = total_samples_accumulated
@@ -227,12 +228,12 @@ if __name__ == "__main__":
 
 '''
 torchrun --nnodes=1 --nproc-per-node=8 train.py   \
-        --output-dir /new_data/experiments_rh/qwen1.5b_tablegpt_v2     \
-        --model-name-or-path Qwen/Qwen2.5-1.5B-Instruct \
-        --data-path test_1.jsonl \
-        --min-samples-per-checkpoint 200000      \
-        --max-tokens-per-gpu 50000              \
-        --batch-size 2048                       \
-        --learning-rate 2e-5                    \
-        --use-liger-kernels
+        --output-dir /new_data/experiments_rh/llama_knowledge_mini_trainer_pipe_cleaner_v2     \
+        --model-name-or-path /dev/shm/Llama-3.1-8B-Instruct/ \
+        --data-path /dev/shm/knowledge_processed.jsonl \
+        --min-samples-per-checkpoint 200      \
+        --max-tokens-per-gpu 80000              \
+        --batch-size 128                       \
+        --use-liger-kernels                    \
+        --learning-rate 1e-5
 '''
