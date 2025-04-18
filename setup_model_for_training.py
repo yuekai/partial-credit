@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
@@ -110,6 +111,7 @@ def setup_model(model=None, **kwargs):
     if kwargs['use_liger_kernels']:
         '''need to patch the loss function to not reduce, so we can reduce across all GPUs'''
         from none_reduction_losses import liger_fixed_fused_linear_cross_entropy_none_reduction
+        from liger_kernel.transformers.model.loss_utils import fixed_fused_linear_cross_entropy
         patch_target_module("liger_kernel.transformers.model.loss_utils.fixed_fused_linear_cross_entropy", 
                             liger_fixed_fused_linear_cross_entropy_none_reduction)
         from liger_kernel.transformers import AutoLigerKernelForCausalLM
@@ -165,3 +167,38 @@ def setup_training_components(model, **kwargs):
     lr_scheduler.step() #the scheduler starts at 0 and there's no learning.
     accelerator.register_for_checkpointing(lr_scheduler)
     return model, accelerator, optimizer, lr_scheduler
+
+if __name__ == "__main__":
+    from utils import init_distributed_environment
+    init_distributed_environment()
+    model_name_or_path = '/dev/shm/Llama-3.1-8B-Instruct/'
+    # model_name_or_path = '/dev/shm/test_save'
+    model = setup_model(model_name_or_path=model_name_or_path, use_liger_kernels=True)
+    model, accelerator, _, _ = setup_training_components(model, 
+                                                        learning_rate=1e-5,
+                                                        num_warmup_steps=10,
+                                                        lr_scheduler="constant_with_warmup",
+                                                        fsdp_sharding_strategy="HYBRID_SHARD")
+    import shutil
+    output_dir = Path("/new_data/experiments_rh/llama_knowledge_mini_trainer_pipe_cleaner_v2/hf_format/test_save")
+    # output_dir = Path("/dev/shm/test_save")
+    shutil.rmtree(output_dir, ignore_errors=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    accelerator.save_model(model,
+                        str(output_dir),
+                        max_shard_size="5GB",
+                        safe_serialization=True,
+    )
+    if accelerator.is_main_process:
+        from transformers import AutoTokenizer
+        model.module.config.to_json_file(str(output_dir / "config.json"))
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        tokenizer.save_pretrained(output_dir)
+        from IPython import embed
+        embed()
+    torch.distributed.barrier()
+    model = setup_model(model_name_or_path=output_dir, use_liger_kernels=True)
+
+'''
+torchrun --nnodes=1 --nproc-per-node=8 setup_model_for_training.py
+'''
