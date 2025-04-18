@@ -1,0 +1,10 @@
+numpy<2
+datasets
+transformers
+typer
+liger-kernel-nightly
+aiofiles
+torch
+rich
+accelerate
+flash-attn
