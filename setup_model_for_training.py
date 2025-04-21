@@ -111,7 +111,6 @@ def setup_model(model=None, **kwargs):
     if kwargs['use_liger_kernels']:
         '''need to patch the loss function to not reduce, so we can reduce across all GPUs'''
         from none_reduction_losses import liger_fixed_fused_linear_cross_entropy_none_reduction
-        from liger_kernel.transformers.model.loss_utils import fixed_fused_linear_cross_entropy
         patch_target_module("liger_kernel.transformers.model.loss_utils.fixed_fused_linear_cross_entropy", 
                             liger_fixed_fused_linear_cross_entropy_none_reduction)
         from liger_kernel.transformers import AutoLigerKernelForCausalLM
