@@ -20,17 +20,14 @@ def make_input_ids_from_messages(sample: dict, tokenizer):
             content = sample["messages"][0]["content"]
             sample['input_ids'] = tokenizer.encode(content, add_special_tokens=False)
             sample['pretrain'] = True
-            return sample
         else:
             sample['input_ids'] = tokenizer.apply_chat_template(sample['messages'], tokenize=True)
             messages = sample['messages']
             for m in messages:
-                if m['role'] == "assistant":
-                    if not m['content']:
-                        # raise ValueError("Assistant message is empty")
-                        sample['error'] = True
-            sample['len'] = len(sample['input_ids'])
-            return sample
+                if m['role'] == "assistant" and not m['content']:
+                    sample['error'] = True
+        sample['len'] = len(sample['input_ids'])
+        return sample
     except Exception as e:
         sample['error'] = True
         return sample
@@ -135,11 +132,15 @@ def infer_special_token_sequences(tokenizer):
 
 @app.command()
 def process_data(
-    input_jsonl: str = typer.Option(..., "--input-file"),
-    output_jsonl: str = typer.Option(..., "--output-file"),
+    input_jsonl: str = typer.Option(..., "--input-file",
+                                    help="path to the input jsonl file"),
+    output_jsonl: str = typer.Option(..., "--output-file",
+                                     help="path to the output tokenizedjsonl file"),
     model_name_or_path: str = typer.Option(..., "--model-name-or-path"),
-    max_sample_num_tokens: int = typer.Option(2147483647, help="max number of tokens in a sample, samples beyond this will be removed"),
-    string_for_printing_masks: str = typer.Option("<|mAsK|>", "--string-for-printing-masks"),
+    max_sample_num_tokens: int = typer.Option(2147483647, 
+                                              help="max number of tokens in a sample, samples longer than this will be removed"),
+    string_for_printing_masks: str = typer.Option("<|mAsK|>", "--string-for-printing-masks", 
+                                                  help="when printing samples at the end, the masked tokens in the labels will be replaced with this string"),
 ):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     assistant_tk_ids, user_tk_ids = infer_special_token_sequences(tokenizer)
@@ -152,15 +153,19 @@ def process_data(
         lambda x: make_input_ids_from_messages(x, tokenizer),
         num_proc=64,
     )
-    dataset_with_input_ids = dataset_with_input_ids.filter(lambda x: not x['error'], num_proc=64)
-    print("\033[38;5;196m" + f"Number of samples with errors: {len(dataset) - len(dataset_with_input_ids)}" + "\033[0m")
+    dataset_with_input_ids = dataset_with_input_ids.filter(lambda x: not x['error'], 
+                                                           num_proc=64,
+                                                    )
+    print("\033[38;5;196m" + f"Total number of filtered samples after removing samples with errors: {len(dataset) - len(dataset_with_input_ids)}" + "\033[0m")
     
-    dataset_with_input_ids = dataset_with_input_ids.filter(lambda x: x['len'] <= max_sample_num_tokens, num_proc=64)
-    print("\033[38;5;196m" + f"Number of samples after filtering by max sample length: {len(dataset) - len(dataset_with_input_ids)}" + "\033[0m")
+    dataset_with_input_ids = dataset_with_input_ids.filter(lambda x: x['len'] <= max_sample_num_tokens, 
+                                                           num_proc=64,
+                                                    )
+    print("\033[38;5;196m" + f"Total number of filtered samples after removing samples longer than {max_sample_num_tokens} tokens: {len(dataset) - len(dataset_with_input_ids)}" + "\033[0m")
     
     dataset_with_labels = dataset_with_input_ids.map(
         lambda x: make_labels_from_input_ids(x, assistant_tk_ids, user_tk_ids),
-        # num_proc=64,
+        num_proc=64,
     )
     
     #printing some samples to check the results
@@ -183,9 +188,9 @@ if __name__ == "__main__":
 
 '''
 # python process_data.py --input-file /new_data/knowledge_rh/quality/training_mix/entigraph_knowledge1.0_phi4_first_24_n_5_5_percent.jsonl \
-python process_data.py --input-file ./limo_messages.jsonl \
-      --output-file /dev/shm/limo_processed.jsonl \
-      --model-name-or-path microsoft/phi-4 \
+python process_data.py --input-file '/Users/aldo/Downloads/data.jsonl' \
+      --output-file ./some_product_puzzle_tokenized_qwen1.5b.jsonl \
+      --model-name-or-path Qwen/Qwen2.5-1.5B \
       --string-for-printing-masks "<|mAsK|>" \
       --max-sample-num-tokens 16384
 '''
