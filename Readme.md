@@ -60,7 +60,7 @@ torchrun --nnodes=1 --nproc-per-node=8 train.py \
         --model-name-or-path Qwen/Qwen2.5-1.5B-instruct \
         --min-samples-per-checkpoint 10000 \
         --num-warmup-steps 20 \
-        --max-tokens-per-gpu \
+        --max-tokens-per-gpu 60000 \
         --batch-size 128 \
         --use-liger-kernels \
         --seed 893 \
@@ -69,3 +69,5 @@ torchrun --nnodes=1 --nproc-per-node=8 train.py \
 ```
 
 the parameters used for the run will be saved in `<output_dir>/training_params.json` and the metrics will be saved to `<output_dir>/training_metrics_0.jsonl`.
+
+NOTE: keep an eye on `nvidia-smi` while training and raise the `max-tokens-per-gpu` until you're close (but not quite to avoid cuda memory re allocations) to the max memory in your GPUs.
