@@ -119,6 +119,7 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
                     "time_per_batch": batch_time,
                     "tokens_per_second": bm['num_total_tokens']/batch_time,
                     "total_samples_accumulated": total_samples_accumulated, 
+                    "samples_per_second": bm['num_samples']/batch_time,
                     "peak_memory_usage_GB": float(torch.cuda.max_memory_allocated() / 1e9)
                 }
             metric_logger.log_sync(
@@ -227,13 +228,21 @@ if __name__ == "__main__":
 
 
 '''
-torchrun --nnodes=1 --nproc-per-node=8 train.py   \
-        --output-dir /new_data/experiments_rh/llama_knowledge_mini_trainer_pipe_cleaner_v2     \
-        --model-name-or-path /dev/shm/Llama-3.1-8B-Instruct/ \
+rclone copy --copy-links /new_data/experiments_rh/phi-4_limo_trainer_pipe_cleaner/hf_format/samples_8192.0 /dev/shm/phi-4_limo_trainer_pipe_cleaner_cont
         --data-path /dev/shm/knowledge_processed.jsonl \
-        --min-samples-per-checkpoint 200      \
-        --max-tokens-per-gpu 80000              \
+        --data-path ./some_product_puzzle_tokenized_qwen1.5b.jsonl \
+        --data-path ./mihir_prob.jsonl \
+        --output-dir /new_data/experiments_rh/mihir_prob_qwen1.5b_v2     \
+torchrun --nnodes=1 --nproc-per-node=8 train.py   \
+        --output-dir /new_data/experiments_rh/siddant/     \
+        --data-path ./test.jsonl \
+        --model-name-or-path Qwen/Qwen2.5-1.5B-instruct \
+        --min-samples-per-checkpoint 10000      \
+        --num-warmup-steps 20 \
+        --max-tokens-per-gpu 60000              \
         --batch-size 128                       \
         --use-liger-kernels                    \
-        --learning-rate 1e-5
+        --seed 893                               \
+        --fsdp-sharding-strategy FULL_SHARD \
+        --learning-rate 6e-6
 '''
