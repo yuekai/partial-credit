@@ -4,12 +4,12 @@ MiniTrainer is a small form factor and extremely efficient training library for 
 
 Features:
 - [Liger Kernels](https://github.com/linkedin/Liger-Kernel/tree/908b89c4dc9bb872351887b382a1e09ca25fbe85) to minimize memory footprint by chunking the loss computation.
-- Automatic minibatching based on the effective batch size: forget about tuning your gradient accumulation, just specify `max-tokens-per-gpu` and `batch-size` and the library will automatically divides your batches in balanced minibatches across your GPUs while never surpassing the specified number of tokens per GPU.
-- FullyShardedDataParallel via accelerate for efficient sharding across multi-GPU settings.
-- Padding-free: it currently only works on GPUs that support flash attention and uses the padding-free feature of the transformer library to avoid extra computation on padding tokens.
-- Infinite Sampling: forget about setting the number of epochs, just start the training and it would automatically sample an infinite stream of batches from your data.
-- pretrain and supervised fine tuninng tokenization schemes
-- `jsonl` logging, your metrics will be logged in the output directory as a jsonl that can easily be processed for plotting, wandb or whatever you like for experiment tracking.
+- **Automatic minibatching* based on the effective batch size: forget about tuning your gradient accumulation, just specify `max-tokens-per-gpu` and `batch-size` and the library will automatically divides your batches in balanced minibatches across your GPUs while never surpassing the specified number of tokens per GPU.
+- **FullyShardedDataParallel** via accelerate for efficient sharding across multi-GPU settings.
+- **Padding-free** -- it currently only works on GPUs that support flash attention and uses the padding-free feature of the transformer library to avoid extra computation on padding tokens.
+- **Infinite Sampling** -- forget about setting the number of epochs, just start the training and it would automatically sample an infinite stream of batches from your data.
+- **pretrain and supervised** fine tuninng tokenization schemes
+- **`jsonl` logging**, your metrics will be logged in the output directory as a jsonl that can easily be processed for plotting, wandb or whatever you like for experiment tracking.
 
 # install requirements
 
