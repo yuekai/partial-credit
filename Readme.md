@@ -2,7 +2,7 @@
 
 MiniTrainer is a small form factor and extremely efficient training library for models up to 70B parameters on a single 8xA100/H100 node, although it supports multinode training if your infrastructure has ROCE/Infiniband.
 
-Features:
+### Features:
 - [Liger Kernels](https://github.com/linkedin/Liger-Kernel/tree/908b89c4dc9bb872351887b382a1e09ca25fbe85) to minimize memory footprint by chunking the loss computation.
 - **Automatic minibatching* based on the effective batch size: forget about tuning your gradient accumulation, just specify `max-tokens-per-gpu` and `batch-size` and the library will automatically divides your batches in balanced minibatches across your GPUs while never surpassing the specified number of tokens per GPU.
 - **FullyShardedDataParallel** via accelerate for efficient sharding across multi-GPU settings.
@@ -11,7 +11,7 @@ Features:
 - **pretrain and supervised** fine tuninng tokenization schemes
 - **`jsonl` logging**, your metrics will be logged in the output directory as a jsonl that can easily be processed for plotting, wandb or whatever you like for experiment tracking.
 
-# install requirements
+# Installation
 
 ```shell
 conda create -n minitrain python=3.12 -y; conda activate minitrain
@@ -19,7 +19,7 @@ pip install torch
 pip install -r requirements.txt
 ```
 
-# Process Input Data
+# Data Tokenization
 
 You first need to tokenize your data and get the input tokens and the output label tokens. The resulting label tokens will contain a mask token (`-100`) for the `user` and `system` roles, and unmask the tokens for the `assistant` role content. If you wish to pretrain (i.e. train on all tokens in the input) include the data in a single `pretrain` role message.
 
@@ -32,7 +32,7 @@ python process_data.py \
 --max-sample-num-tokens 32768
 ```
 
-## assumptions on the data
+### Data Assumptions
 The data must be a `json list` format (each line a json), and each sample should have a `messages` field formatted like this:
 
 
