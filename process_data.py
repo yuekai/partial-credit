@@ -18,7 +18,7 @@ def make_input_ids_from_messages(sample: dict, tokenizer):
         if "pretrain" in roles:
             assert len(roles) == 1
             content = sample["messages"][0]["content"]
-            sample['input_ids'] = tokenizer.encode(content, add_special_tokens=False)
+            sample['input_ids'] = tokenizer.encode(content + tokenizer.eos_token, add_special_tokens=False) 
             sample['pretrain'] = True
         else:
             sample['input_ids'] = tokenizer.apply_chat_template(sample['messages'], tokenize=True)
