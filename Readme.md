@@ -4,7 +4,7 @@ MiniTrainer is a small form factor and extremely efficient training library for 
 
 ### Features:
 - [Liger Kernels](https://github.com/linkedin/Liger-Kernel/tree/908b89c4dc9bb872351887b382a1e09ca25fbe85) to minimize memory footprint by chunking the loss computation.
-- **Automatic minibatching* based on the effective batch size: forget about tuning your gradient accumulation, just specify `max-tokens-per-gpu` and `batch-size` and the library will automatically divides your batches in balanced minibatches across your GPUs while never surpassing the specified number of tokens per GPU.
+- **Automatic minibatching** based on the effective batch size: forget about tuning your gradient accumulation, just specify `max-tokens-per-gpu` and `batch-size` and the library will automatically divides your batches in balanced minibatches across your GPUs while never surpassing the specified number of tokens per GPU.
 - **FullyShardedDataParallel** via accelerate for efficient sharding across multi-GPU settings.
 - **Padding-free** -- it currently only works on GPUs that support flash attention and uses the padding-free feature of the transformer library to avoid extra computation on padding tokens.
 - **Infinite Sampling** -- forget about setting the number of epochs, just start the training and it would automatically sample an infinite stream of batches from your data.
@@ -71,3 +71,84 @@ torchrun --nnodes=1 --nproc-per-node=8 train.py \
 the parameters used for the run will be saved in `<output_dir>/training_params.json` and the metrics will be saved to `<output_dir>/training_metrics_0.jsonl`.
 
 NOTE: keep an eye on `nvidia-smi` while training and raise the `max-tokens-per-gpu` until you're close (but not quite to avoid cuda memory re allocations) to the max memory in your GPUs.
+
+### Multinode Training
+
+First, you need to know the IP address of the node with rank 0. 
+
+```shell
+# identify the main ethernet interface
+ip route get 1.1.1.1 | awk '{print $5}'
+# eth0
+# use the outpput of this command to get the ip address of such node
+export master_addr=$(ip addr show eth0 | grep "inet\b" | awk '{print $2}' | cut -d/ -f1)
+echo $master_addr
+# 10.241.128.19
+# set some free port in the node
+export master_port=29500
+```
+
+Make sure your tokenized `data-path` and your `output-dir` are both in a shared file system and then on each node do:
+
+```shell
+export num_nodes=2 # set this to the number of nodes you're using
+torchrun --nnodes=$num_nodes --node_rank=$rank --nproc_per_node=8 --rdzv_id=101 \
+        --rdzv_endpoint="$master_addr:$master_port" train.py \
+        --output-dir ./experiment_checkpoints_loggin_etc/ \
+        --data-path ./tokenized_data.jsonl \
+        --model-name-or-path Qwen/Qwen2.5-1.5B-instruct \
+        --min-samples-per-checkpoint 10000 \
+        --num-warmup-steps 20 \
+        --max-tokens-per-gpu 60000 \
+        --batch-size 128 \
+        --use-liger-kernels \
+        --seed 893 \
+        --fsdp-sharding-strategy FULL_SHARD \
+        --learning-rate 6e-6
+```
+
+NOTE: the number of nodes and the rank have to be set by the launcher or manually on each node.
+
+### Multi-Node Training via SLURM
+
+Create a file `slurm_multi_node.sbatch`:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=minitrain-multinode   # job name
+#SBATCH --output=minitrain_%j.log        # stdout log
+#SBATCH --partition=gpu                  # adjust for your cluster
+#SBATCH -N 2                             # number of nodes
+#SBATCH --ntasks-per-node=8              # GPUs per node
+#SBATCH --gpus-per-task=1                # GPUs per task
+#SBATCH --cpus-per-task=10               # CPU cores per task
+#SBATCH --time=24:00:00                  # walltime
+
+export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
+export MASTER_PORT=29500
+
+srun torchrun \
+  --nnodes=$SLURM_JOB_NUM_NODES \
+  --nproc-per-node=$SLURM_NTASKS_PER_NODE \
+  --node_rank=$SLURM_NODEID \
+  --rdzv_id=$SLURM_JOB_ID \
+  --rdzv_backend=c10d \
+  --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
+  train.py \
+    --output-dir ./checkpoints/ \
+    --data-path ./tokenized_data.jsonl \
+    --max-tokens-per-gpu 60000 \
+    --batch-size 128
+```
+
+Submit with:
+
+```bash
+sbatch slurm_multi_node.sbatch
+```
+
+Adjust the SBATCH directives and paths (`train.py`, `--data-path`, `--output-dir`) as needed.
+
+* For a full torchrun + SLURM example, see the PyTorch official tutorial:
+  https://github.com/pytorch/examples/blob/main/distributed/ddp-tutorial-series/slurm/sbatch_run.sh
+
