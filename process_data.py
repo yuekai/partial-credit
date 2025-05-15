@@ -33,6 +33,9 @@ def make_input_ids_from_messages(sample: dict, tokenizer):
         return sample
 
 def make_labels_from_input_ids(sample: dict, assistant_tk_ids: list, user_tk_ids: list):
+    '''    
+    Create training labels by unmasking only the assistant's reply tokens and masking all other tokens (user messages and special delimiters) with -100. For pretraining samples, labels equal the input_ids.
+    '''
     if sample['pretrain']:
         sample['labels'] = sample['input_ids']
         return sample
@@ -65,7 +68,7 @@ def make_labels_from_input_ids(sample: dict, assistant_tk_ids: list, user_tk_ids
     return sample
 
 def make_num_loss_tokens_from_labels(sample: dict):
-    sample['num_loss_tokens'] = sum([l != -100 for l in sample['labels']])
+    sample['num_loss_counted_tokens'] = sum([l != -100 for l in sample['labels']])
     return sample
 
 def infer_special_token_sequences(tokenizer):

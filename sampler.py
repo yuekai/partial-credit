@@ -103,7 +103,8 @@ class JsonlDataset(Dataset):
         return {
             'input_ids': torch.tensor(sample['input_ids'], dtype=torch.long),
             'labels': torch.tensor(sample['labels'], dtype=torch.long),
-            'len': sample['len']
+            'len': sample['len'],
+            'num_loss_counted_tokens': sample['num_loss_counted_tokens']
         }
     
         
@@ -232,7 +233,8 @@ class MaxTokensPerRankCollator:
         if dummy_sample is None:
             dummy_sample = {'input_ids': torch.tensor([15, 14, 13, 12, 11], dtype=torch.long),
                             'labels': torch.tensor([-100, -100, -100, -100, -100], dtype=torch.long),
-                            'len': 5}
+                            'len': 5,
+                            'num_loss_counted_tokens': 0}
         self.dummy_sample = dummy_sample
 
     def __call__(self, batch: list[dict]):

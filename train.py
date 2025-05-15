@@ -71,7 +71,7 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
             loss_metrics = loss.detach().item()
             '''multiply by world_size to account for the fact that fsdp takes the mean of the gradients across the world_size'''
             '''divide by avg_sample_length to avoid scaling the gradients by a large number'''
-            loss = loss * int(os.environ["WORLD_SIZE"]) * mb_num_loss_counted_tokens / batch_num_loss_counted_tokens
+            loss = loss * int(os.environ["WORLD_SIZE"]) / batch_num_loss_counted_tokens
             accelerator.backward(loss)
             torch.cuda.empty_cache()
 
@@ -101,10 +101,11 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
                     "step": step,
                     "lr": lr_scheduler.get_last_lr()[0],
                     "grad_norm": grad_norm.item(),
-                    "loss": bm['loss']/bm['num_loss_counted_tokens'],
-                    "avg_loss_backward": bm['loss_backward']/bm['num_samples'],
+                    "loss": bm['loss']/int(os.environ["WORLD_SIZE"]),
+                    "avg_loss_backward": bm['loss_backward']/(grad_accum+1),
                     "num_samples": bm['num_samples'],
                     "num_loss_counted_tokens": bm['num_loss_counted_tokens'],
+                    "batch_num_loss_counted_tokens": batch_num_loss_counted_tokens,
                     "num_total_tokens": bm['num_total_tokens'],
                     "grad_accum": grad_accum+1,
                     "avg_time_per_minibatch": bm['time_per_minibatch']/(grad_accum+1)/int(os.environ["WORLD_SIZE"]),
@@ -113,7 +114,6 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
                     "total_samples_accumulated": total_samples_accumulated, 
                     "samples_per_second": bm['num_samples']/batch_time,
                     "peak_memory_usage_GB": float(torch.cuda.max_memory_allocated() / 1e9),
-                    "batch_num_loss_counted_tokens": batch_num_loss_counted_tokens,
                 }
             metric_logger.log_sync(
                 batch_metrics
