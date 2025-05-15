@@ -19,15 +19,8 @@ app = Typer(
     pretty_exceptions_short=True   
 )
 
-def scale_model_gradients(model, scaling_factor):
-    scale_factor = 1.0 / scaling_factor
-    for param in model.parameters():
-        if param.grad is not None:
-            param.grad.mul_(scale_factor)
-
-def take_gradient_step(model, optimizer, lr_scheduler, accelerator, total_num_loss_counted_tokens, avg_sample_length):
+def take_gradient_step(model, optimizer, lr_scheduler, accelerator):
     """Scales gradients, applies clipping, and takes an optimization step."""
-    scale_model_gradients(model, total_num_loss_counted_tokens/avg_sample_length)
     grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     lr_scheduler.step()
@@ -70,6 +63,7 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
             mb_start_time = time.time()
             mb_num_loss_counted_tokens = mb.pop('num_loss_counted_tokens')
             mb_num_samples = mb.pop('num_samples')
+            batch_num_loss_counted_tokens = mb.pop('batch_num_loss_counted_tokens')
             mb = {k: v.to(accelerator.device) for k, v in mb.items()}
             # torch.distributed.breakpoint()
             output = model(**mb)
@@ -77,7 +71,7 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
             loss_metrics = loss.detach().item()
             '''multiply by world_size to account for the fact that fsdp takes the mean of the gradients across the world_size'''
             '''divide by avg_sample_length to avoid scaling the gradients by a large number'''
-            loss = loss * int(os.environ["WORLD_SIZE"]) / avg_sample_length 
+            loss = loss * int(os.environ["WORLD_SIZE"]) * mb_num_loss_counted_tokens / batch_num_loss_counted_tokens
             accelerator.backward(loss)
             torch.cuda.empty_cache()
 
@@ -99,9 +93,7 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
         grad_norm = take_gradient_step(model, 
                                        optimizer, 
                                        lr_scheduler, 
-                                       accelerator, 
-                                       bm['num_loss_counted_tokens'], 
-                                       avg_sample_length)
+                                       accelerator)
 
         if accelerator.is_main_process:
             batch_time = time.time() - batch_start_time
@@ -120,7 +112,8 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
                     "tokens_per_second": bm['num_total_tokens']/batch_time,
                     "total_samples_accumulated": total_samples_accumulated, 
                     "samples_per_second": bm['num_samples']/batch_time,
-                    "peak_memory_usage_GB": float(torch.cuda.max_memory_allocated() / 1e9)
+                    "peak_memory_usage_GB": float(torch.cuda.max_memory_allocated() / 1e9),
+                    "batch_num_loss_counted_tokens": batch_num_loss_counted_tokens,
                 }
             metric_logger.log_sync(
                 batch_metrics
@@ -234,8 +227,8 @@ rclone copy --copy-links /new_data/experiments_rh/phi-4_limo_trainer_pipe_cleane
         --data-path ./mihir_prob.jsonl \
         --output-dir /new_data/experiments_rh/mihir_prob_qwen1.5b_v2     \
 torchrun --nnodes=1 --nproc-per-node=8 train.py   \
-        --output-dir /new_data/experiments_rh/siddant/     \
-        --data-path ./test.jsonl \
+        --output-dir /new_data/experiments_rh/siddantv2/     \
+        --data-path ./siddhant.jsonl \
         --model-name-or-path Qwen/Qwen2.5-1.5B-instruct \
         --min-samples-per-checkpoint 10000      \
         --num-warmup-steps 20 \

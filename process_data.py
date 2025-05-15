@@ -64,6 +64,10 @@ def make_labels_from_input_ids(sample: dict, assistant_tk_ids: list, user_tk_ids
     sample['labels'] = labels
     return sample
 
+def make_num_loss_tokens_from_labels(sample: dict):
+    sample['num_loss_tokens'] = sum([l != -100 for l in sample['labels']])
+    return sample
+
 def infer_special_token_sequences(tokenizer):
     '''
     this function tries to infer the special token sequences from the tokenizer.
@@ -165,6 +169,11 @@ def process_data(
     
     dataset_with_labels = dataset_with_input_ids.map(
         lambda x: make_labels_from_input_ids(x, assistant_tk_ids, user_tk_ids),
+        num_proc=64,
+    )
+
+    dataset_with_labels = dataset_with_labels.map(
+        make_num_loss_tokens_from_labels,
         num_proc=64,
     )
     

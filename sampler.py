@@ -135,7 +135,7 @@ class InfiniteSampler(Sampler):
     def __len__(self):
         return self.len_data
     
-def mb_collate_fn(minibatch):
+def mb_collate_fn(minibatch, batch_num_loss_counted_tokens):
     """Collates a list of samples into a single packed batch for Flash Attention.
 
     This function takes a 'minibatch' (list of pre-fetched dataset samples)
@@ -181,11 +181,11 @@ def mb_collate_fn(minibatch):
         position_ids.extend(range(item_len))
 
         total_len += item_len
-        sample_loss_counted_tokens = (item["labels"] != -100).sum().item()
-        num_loss_counted_tokens += sample_loss_counted_tokens
+        # sample_loss_counted_tokens = (item["labels"] != -100).sum().item()
+        num_loss_counted_tokens += item["num_loss_counted_tokens"]
         
         '''dummy samples don't have labels != -100 and should not count'''
-        num_samples += 1 if sample_loss_counted_tokens > 0 else 0 
+        num_samples += 1 if item["num_loss_counted_tokens"] > 0 else 0 
 
     # print(
     #     f"\033[96m total length: {total_len} "
@@ -197,7 +197,8 @@ def mb_collate_fn(minibatch):
         "labels": torch.tensor([labels], dtype=torch.long),
         "position_ids": torch.tensor([position_ids], dtype=torch.long),
         "num_loss_counted_tokens": num_loss_counted_tokens,
-        "num_samples": num_samples,  # pylint: disable=W0631
+        "num_samples": num_samples,
+        "batch_num_loss_counted_tokens": batch_num_loss_counted_tokens,
     }
     
 class MaxTokensPerRankCollator:
@@ -248,12 +249,13 @@ class MaxTokensPerRankCollator:
         if len(batch_) < len(batch):
             print(f"\033[38;5;196mremoved {len(batch) - len(batch_)} samples from batch because they are longer than the max tokens per gpu\033[0m")
         batch_lengths = [sample['len'] for sample in batch]
+        batch_num_loss_counted_tokens = sum([sample['num_loss_counted_tokens'] for sample in batch])
         all_minibatches_indices = batch_lengths_to_minibatches(batch_lengths, self.max_tokens_per_rank, self.world_size, self.rank)
         
         all_minibatches = []
         for mb_indices in all_minibatches_indices:
             mb = [batch[i] if i != -1 else self.dummy_sample for i in mb_indices]
-            all_minibatches.append(mb_collate_fn(mb))
+            all_minibatches.append(mb_collate_fn(mb, batch_num_loss_counted_tokens))
 
         return all_minibatches
     
