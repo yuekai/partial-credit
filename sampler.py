@@ -29,7 +29,7 @@ import torch
 from torch.utils.data import Sampler, Dataset, DataLoader
 import torch.distributed as dist
 import numpy as np
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 
 def reset_minibatches(num_ranks: int):
     return [[] for _ in range(num_ranks)], np.zeros(num_ranks)
@@ -91,7 +91,8 @@ def batch_lengths_to_minibatches(batch_lengths: list[int], max_tokens_per_rank: 
 
 class JsonlDataset(Dataset):
     def __init__(self, path: str = "/new_data/aldo/v1_reasoning/math_simplerl_qwen_data_token_ids.jsonl"):
-        dataset = load_dataset("json", data_files=path, split="train")
+        # dataset = load_dataset("json", data_files=path, split="train")
+        dataset = load_from_disk(path)
         self.dataset = dataset
 
     def __len__(self):

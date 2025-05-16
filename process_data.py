@@ -134,7 +134,7 @@ def infer_special_token_sequences(tokenizer):
 def process_data(
     input_jsonl: str = typer.Option(..., "--input-file",
                                     help="path to the input jsonl file"),
-    output_jsonl: str = typer.Option(..., "--output-file",
+    output_dir: str = typer.Option(..., "--output-dir",
                                      help="path to the output tokenizedjsonl file"),
     model_name_or_path: str = typer.Option(..., "--model-name-or-path"),
     max_sample_num_tokens: int = typer.Option(2147483647, 
@@ -186,7 +186,8 @@ def process_data(
         print("\033[38;5;208m" + tokenizer.decode(label_ids) + "\033[0m")
         print("-"*100)
     
-    dataset_with_labels.to_json(Path(output_jsonl), num_proc=num_proc)
+    # dataset_with_labels.to_json(Path(output_jsonl), num_proc=num_proc)
+    dataset_with_labels.save_to_disk(Path(output_dir), num_proc=num_proc)
 
 if __name__ == "__main__":
     app()

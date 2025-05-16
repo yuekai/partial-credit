@@ -27,7 +27,7 @@ You first need to tokenize your data and get the input tokens and the output lab
 TOKENIZERS_PARALLELISM=False \
 python process_data.py \
 --input-file "data/mistral_pcm_data.jsonl" \
---output-file "data/mistral_pcm_data.tkns.jsonl" \
+--output-dir "data/mistral_pcm_tkns" \
 --model-name-or-path "meta-llama/Llama-3.1-8B-Instruct" \
 --max-sample-num-tokens 32768
 ```
