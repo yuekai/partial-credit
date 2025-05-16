@@ -141,6 +141,8 @@ def process_data(
                                               help="max number of tokens in a sample, samples longer than this will be removed"),
     string_for_printing_masks: str = typer.Option("<|mAsK|>", "--string-for-printing-masks", 
                                                   help="when printing samples at the end, the masked tokens in the labels will be replaced with this string"),
+    num_proc: int = typer.Option(4, 
+                                help="number of parallel processes to use for processing the data"),
 ):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     try:
@@ -154,21 +156,21 @@ def process_data(
     
     dataset_with_input_ids = dataset.map(
         lambda x: make_input_ids_from_messages(x, tokenizer),
-        num_proc=64,
+        num_proc=num_proc,
     )
     dataset_with_input_ids = dataset_with_input_ids.filter(lambda x: not x['error'], 
-                                                           num_proc=64,
+                                                           num_proc=num_proc,
                                                     )
     print("\033[38;5;196m" + f"Total number of filtered samples after removing samples with errors: {len(dataset) - len(dataset_with_input_ids)}" + "\033[0m")
     
     dataset_with_input_ids = dataset_with_input_ids.filter(lambda x: x['len'] <= max_sample_num_tokens, 
-                                                           num_proc=64,
+                                                           num_proc=num_proc,
                                                     )
     print("\033[38;5;196m" + f"Total number of filtered samples after removing samples longer than {max_sample_num_tokens} tokens: {len(dataset) - len(dataset_with_input_ids)}" + "\033[0m")
     
     dataset_with_labels = dataset_with_input_ids.map(
         lambda x: make_labels_from_input_ids(x, assistant_tk_ids, user_tk_ids),
-        num_proc=64,
+        num_proc=num_proc,
     )
     
     #printing some samples to check the results
@@ -184,7 +186,7 @@ def process_data(
         print("\033[38;5;208m" + tokenizer.decode(label_ids) + "\033[0m")
         print("-"*100)
     
-    dataset_with_labels.to_json(Path(output_jsonl), num_proc=64)
+    dataset_with_labels.to_json(Path(output_jsonl), num_proc=num_proc)
 
 if __name__ == "__main__":
     app()
