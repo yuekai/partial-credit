@@ -17,8 +17,8 @@ def make_input_ids_from_messages(sample: dict, tokenizer):
 
         if "pretrain" in roles:
             assert len(roles) == 1
-            content = sample["messages"][0]["content"]
-            sample['input_ids'] = tokenizer.encode(content + tokenizer.eos_token, add_special_tokens=False) 
+            content = sample["messages"][0]["content"] + tokenizer.eos_token
+            sample['input_ids'] = tokenizer.encode(content, add_special_tokens=False) 
             sample['pretrain'] = True
         else:
             sample['input_ids'] = tokenizer.apply_chat_template(sample['messages'], tokenize=True)
@@ -143,7 +143,10 @@ def process_data(
                                                   help="when printing samples at the end, the masked tokens in the labels will be replaced with this string"),
 ):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    assistant_tk_ids, user_tk_ids = infer_special_token_sequences(tokenizer)
+    try:
+        assistant_tk_ids, user_tk_ids = infer_special_token_sequences(tokenizer)
+    except:
+        assistant_tk_ids, user_tk_ids = [], []
     tokenizer.add_special_tokens({"additional_special_tokens": [string_for_printing_masks]})
     string_for_printing_masks_tk = tokenizer.encode(string_for_printing_masks, add_special_tokens=False)[0]
 
