@@ -1,14 +1,9 @@
 import math
-from pathlib import Path
 import torch
-import torch.nn as nn
-from accelerate import Accelerator
-from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision, ShardingStrategy
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from functools import partial
+import torch.distributed as dist
+from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
 from utils import log_rank_0, patch_target_module
-# from grpo_loss import PerTokenLogProbsFromCE, make_grpo_forward
 
 def get_module_class_from_name(
     model: torch.nn.Module, name: str
@@ -24,46 +19,40 @@ def get_module_class_from_name(
             module_class = get_module_class_from_name(child_module, name)
             if module_class is not None:
                 return module_class
-
-def get_fsdp_config(model, **kwargs):
-    # Third Party
-    from accelerate.utils import FullyShardedDataParallelPlugin
-    from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
-
+            
+def wrap_fsdp2(model: torch.nn.Module) -> torch.nn.Module:
+    """
+    Wrap `model` in PyTorch FSDP2 with full sharding and transformer auto-wrap policy under BF16.
+    """
+    # Determine the block class to auto-wrap (first no-split module)
     block_name = model._no_split_modules[0]
-    fsdp_plugin = FullyShardedDataParallelPlugin(
-        auto_wrap_policy=partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={
-                get_module_class_from_name(model, block_name),
-            },
-        ),
-        limit_all_gathers=True,
-        # mixed_precision_policy=MixedPrecision(
-        #     param_dtype=torch.bfloat16,
-        #     reduce_dtype=torch.bfloat16,
-        #     buffer_dtype=torch.bfloat16,
-        # ),
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
-        sharding_strategy=ShardingStrategy[kwargs['fsdp_sharding_strategy']],
-        # sync_module_states=True,
-        # param_init_fn=lambda module: module.to_empty(device=torch.device("cuda"), recurse=False),
-        #     # if torch.distributed.get_rank()!=0 else None,
-        # cpu_ram_efficient_loading=True,
-        use_orig_params=True,
-        state_dict_type="full_state_dict",
-    )
+    block_cls = get_module_class_from_name(model, block_name)
+    if block_cls is None:
+        raise ValueError(f"Could not find module class named {block_name}")
+    
+    # Mixed-precision policy for BF16
+    mp_policy = MixedPrecisionPolicy(
+        param_dtype=torch.bfloat16, 
+        reduce_dtype=torch.bfloat16, 
+        output_dtype=torch.bfloat16, 
+        cast_forward_inputs=True)
 
-    return fsdp_plugin
+    # FSDP2 settings: full shard, BF16, no CPU offload
+    fsdp2_kwargs = {
+        "mp_policy": mp_policy,
+        "reshard_after_forward": True,
 
+    }
 
-def setup_accelerator(model, **kwargs):
-    accelerator = Accelerator(
-        fsdp_plugin=get_fsdp_config(model, **kwargs),
-        mixed_precision="bf16",
-    )
-    accelerator.even_batches = False
-    return accelerator
+    # Auto-wrap child modules
+    for module in model.modules():
+        if isinstance(module, block_cls):
+            fully_shard(module, **fsdp2_kwargs)
+
+    # Wrap the full model
+    fully_shard(model, **fsdp2_kwargs)
+    model = model.to(torch.float32)
+    return model
 
 def align_model_and_tokenizer(model, tokenizer):
     """
@@ -121,8 +110,8 @@ def setup_model(model=None, **kwargs):
                             hf_fixed_cross_entropy_none_reduction)
         from transformers import AutoModelForCausalLM
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
-    from transformers import AutoTokenizer
 
+    from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(kwargs['model_name_or_path'])
     model = align_model_and_tokenizer(model, tokenizer)
 
@@ -146,57 +135,81 @@ def setup_model(model=None, **kwargs):
 
 def setup_training_components(model, **kwargs):
     from transformers import get_scheduler
-    accelerator = setup_accelerator(model, **kwargs)
-    model = accelerator.prepare(model)
+    model = wrap_fsdp2(model)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=kwargs['learning_rate'],
         betas=(0.9, 0.95),
         weight_decay=0.0,
     )
-    model, optimizer = accelerator.prepare(model, optimizer)
     lr_scheduler = get_scheduler(
         name=kwargs['lr_scheduler'],
         optimizer=optimizer,
         num_warmup_steps=kwargs['num_warmup_steps'],
     )
-    # Necessary so that Accelerate does not step once per GPU
-    # see https://github.com/huggingface/accelerate/blob/127818fc27ebe5cb236357fff59ff1748326d643/src/accelerate/scheduler.py#L69
     lr_scheduler.split_batches = True
     lr_scheduler.step() #the scheduler starts at 0 and there's no learning.
-    accelerator.register_for_checkpointing(lr_scheduler)
-    return model, accelerator, optimizer, lr_scheduler
+    return model, optimizer, lr_scheduler
 
 if __name__ == "__main__":
     from utils import init_distributed_environment
+    from torch.distributed.checkpoint.state_dict import get_model_state_dict
     init_distributed_environment()
-    model_name_or_path = '/dev/shm/Llama-3.1-8B-Instruct/'
+    cpu_pg = dist.new_group(backend="gloo")
+    # model_name_or_path = '/dev/shm/Llama-3.1-8B-Instruct/'
     # model_name_or_path = '/dev/shm/test_save'
+    model_name_or_path = 'Qwen/Qwen2.5-1.5B-instruct'
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     model = setup_model(model_name_or_path=model_name_or_path, use_liger_kernels=True)
-    model, accelerator, _, _ = setup_training_components(model, 
+    model, optimizer, lr_scheduler = setup_training_components(model, 
                                                         learning_rate=1e-5,
                                                         num_warmup_steps=10,
-                                                        lr_scheduler="constant_with_warmup",
-                                                        fsdp_sharding_strategy="HYBRID_SHARD")
-    import shutil
-    output_dir = Path("/new_data/experiments_rh/llama_knowledge_mini_trainer_pipe_cleaner_v2/hf_format/test_save")
-    # output_dir = Path("/dev/shm/test_save")
-    shutil.rmtree(output_dir, ignore_errors=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    accelerator.save_model(model,
-                        str(output_dir),
-                        max_shard_size="5GB",
-                        safe_serialization=True,
-    )
-    if accelerator.is_main_process:
-        from transformers import AutoTokenizer
-        model.module.config.to_json_file(str(output_dir / "config.json"))
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-        tokenizer.save_pretrained(output_dir)
-        from IPython import embed
-        embed()
+                                                        lr_scheduler="constant_with_warmup")
+    import os
+    inputs = tokenizer("Hello FSDP2!", return_tensors="pt").to(int(os.environ["LOCAL_RANK"]))
+    outputs = model(**inputs, labels=inputs.input_ids)
+    print(f"Output logits shape: {outputs.logits.shape}")
+    # state_dict = model.state_dict()
+    from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
+    state_dict = get_model_state_dict(model, options=StateDictOptions(full_state_dict=True))
     torch.distributed.barrier()
-    model = setup_model(model_name_or_path=output_dir, use_liger_kernels=True)
+    # from test_async_save import ModelWrapper
+    # wrapper = ModelWrapper(model)
+    ckpt_path = os.path.abspath("fsdp2_ckpt")
+    from test_model_wrap import save_model
+    save_model(model, tokenizer, ckpt_path)
+    model_ = setup_model(model_name_or_path=ckpt_path, use_liger_kernels=True)
+
+    # future = async_save(state_dict, checkpoint_id=ckpt_path, process_group=cpu_pg)
+    # print(f"Async save started: {ckpt_path}")
+    # future.result()
+    # print(f"Async save finished: {ckpt_path}")
+
+    if os.environ.get("RANK") == "0":
+        from IPython import embed; embed()
+    torch.distributed.checkpoint.load(state_dict, checkpoint_id=ckpt_path)
+    torch.distributed.barrier()
+    torch.distributed.destroy_process_group()
+    # import shutil
+    # output_dir = Path("/new_data/experiments_rh/llama_knowledge_mini_trainer_pipe_cleaner_v2/hf_format/test_save")
+    # # output_dir = Path("/dev/shm/test_save")
+    # shutil.rmtree(output_dir, ignore_errors=True)
+    # output_dir.mkdir(parents=True, exist_ok=True)
+    # accelerator.save_model(model,
+    #                     str(output_dir),
+    #                     max_shard_size="5GB",
+    #                     safe_serialization=True,
+    # )
+    # if accelerator.is_main_process:
+    #     from transformers import AutoTokenizer
+    #     model.module.config.to_json_file(str(output_dir / "config.json"))
+    #     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+    #     tokenizer.save_pretrained(output_dir)
+    #     from IPython import embed
+    #     embed()
+    # torch.distributed.barrier()
+    # model = setup_model(model_name_or_path=output_dir, use_liger_kernels=True)
 
 '''
 torchrun --nnodes=1 --nproc-per-node=8 setup_model_for_training.py

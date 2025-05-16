@@ -33,6 +33,9 @@ def make_input_ids_from_messages(sample: dict, tokenizer):
         return sample
 
 def make_labels_from_input_ids(sample: dict, assistant_tk_ids: list, user_tk_ids: list):
+    '''    
+    Create training labels by unmasking only the assistant's reply tokens and masking all other tokens (user messages and special delimiters) with -100. For pretraining samples, labels equal the input_ids.
+    '''
     if sample['pretrain']:
         sample['labels'] = sample['input_ids']
         return sample
@@ -62,6 +65,10 @@ def make_labels_from_input_ids(sample: dict, assistant_tk_ids: list, user_tk_ids
         i += 1
 
     sample['labels'] = labels
+    return sample
+
+def make_num_loss_tokens_from_labels(sample: dict):
+    sample['num_loss_counted_tokens'] = sum([l != -100 for l in sample['labels']])
     return sample
 
 def infer_special_token_sequences(tokenizer):
@@ -141,7 +148,7 @@ def process_data(
                                               help="max number of tokens in a sample, samples longer than this will be removed"),
     string_for_printing_masks: str = typer.Option("<|mAsK|>", "--string-for-printing-masks", 
                                                   help="when printing samples at the end, the masked tokens in the labels will be replaced with this string"),
-    num_proc: int = typer.Option(4, 
+    num_proc: int = typer.Option(64, "--num-proc", 
                                 help="number of parallel processes to use for processing the data"),
 ):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -170,6 +177,11 @@ def process_data(
     
     dataset_with_labels = dataset_with_input_ids.map(
         lambda x: make_labels_from_input_ids(x, assistant_tk_ids, user_tk_ids),
+        num_proc=num_proc,
+    )
+
+    dataset_with_labels = dataset_with_labels.map(
+        make_num_loss_tokens_from_labels,
         num_proc=num_proc,
     )
     
