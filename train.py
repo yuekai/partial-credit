@@ -19,39 +19,67 @@ app = Typer(
     pretty_exceptions_short=True   
 )
 
-def take_gradient_step(model, optimizer, lr_scheduler, accelerator):
+def take_gradient_step(model, optimizer, lr_scheduler):
     """Scales gradients, applies clipping, and takes an optimization step."""
-    grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     lr_scheduler.step()
     optimizer.zero_grad()
     return grad_norm
 
-def save_model(model, accelerator, samples_seen, output_dir, model_name_or_path):
+def save_model(fsdp_model, samples_seen, output_dir, model_name_or_path):
+    from huggingface_hub import split_torch_state_dict_into_shards
+    from transformers import AutoTokenizer
+    from safetensors.torch import save_file
+    # Only on rank 0
     log_rank_0(f"Saving model at {samples_seen} samples")
     start = time.time()
-    output_dir = Path(output_dir) / "hf_format" / f"samples_{samples_seen}"
-    accelerator.save_model(model,
-                           str(output_dir),
-                            max_shard_size="5GB",
-                            safe_serialization=True,
-    )
-    if accelerator.is_main_process:
-        from transformers import AutoTokenizer
-        model.module.config.to_json_file(str(output_dir / "config.json"))
+    rank = torch.distributed.get_rank()
+    save_directory = Path(output_dir) / "hf_format" / f"samples_{samples_seen}"
+    os.makedirs(save_directory, exist_ok=True)
+    # Get full state dict
+    from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
+    state_dict = get_model_state_dict(fsdp_model, options=StateDictOptions(full_state_dict=True))
+    state_dict = {k:v.to(torch.bfloat16) for k,v in state_dict.items()}
+    
+    if rank == 0:
+        pattern = "model{suffix}.safetensors"
+        index_name = "model.safetensors.index.json"
+        
+        # Shard splitting
+        split = split_torch_state_dict_into_shards(
+            state_dict, filename_pattern=pattern, max_shard_size="5GB",
+        )
+        # Save shards
+        for filename, tensors in split.filename_to_tensors.items():
+            shard = {k: state_dict[k] for k in tensors}
+            path = os.path.join(save_directory, filename)
+            save_file(shard, path)
+            
+        # Save index if sharded
+        if split.is_sharded:
+            index = {"metadata": split.metadata, "weight_map": split.tensor_to_filename}
+            with open(os.path.join(save_directory, index_name), "w") as f:
+                json.dump(index, f, indent=2, sort_keys=True)
+        # Save config and tokenizer (unwrap inner module)
+        inner = getattr(fsdp_model, "module", fsdp_model)
+        inner.config.to_json_file(os.path.join(save_directory, "config.json"))
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-        tokenizer.save_pretrained(output_dir)
+        tokenizer.save_pretrained(save_directory)
         log_rank_0(f"\033[1;38;2;0;255;255mSaved model at\033[0m {samples_seen} samples in {time.time() - start:.2f} seconds")
+    torch.distributed.barrier()
 
-def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, min_samples_per_checkpoint, model_name_or_path):
+def train(model, optimizer, lr_scheduler, data_loader, output_dir, min_samples_per_checkpoint, model_name_or_path):
     model.train()
-    avg_sample_length = sum([data_loader.dataset[i]['len'] for i in range(min(1000, len(data_loader.dataset)))]) / min(1000, len(data_loader.dataset))
-    metric_logger = AsyncStructuredLogger(output_dir + f"/training_metrics_{accelerator.process_index}.jsonl")
+    metric_logger = AsyncStructuredLogger(output_dir + f"/training_metrics_{os.environ.get('RANK')}.jsonl")
+    world_size = int(os.environ["WORLD_SIZE"])
+    is_main_process = os.environ.get("RANK") == "0"
 
     batch_totals = BatchMetrics()
     step = 0
     total_samples_accumulated = 0
     last_saved_samples = 0
+    device = next(model.parameters()).device
     
     data_loader = iter(data_loader)
     for batch in data_loader:
@@ -64,15 +92,16 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
             mb_num_loss_counted_tokens = mb.pop('num_loss_counted_tokens')
             mb_num_samples = mb.pop('num_samples')
             batch_num_loss_counted_tokens = mb.pop('batch_num_loss_counted_tokens')
-            mb = {k: v.to(accelerator.device) for k, v in mb.items()}
+            mb = {k: v.to(device) for k, v in mb.items()}
             # torch.distributed.breakpoint()
             output = model(**mb)
-            loss = output.loss.sum() 
+            loss = output.loss.float().sum() 
             loss_metrics = loss.detach().item()
             '''multiply by world_size to account for the fact that fsdp takes the mean of the gradients across the world_size'''
-            '''divide by avg_sample_length to avoid scaling the gradients by a large number'''
-            loss = loss * int(os.environ["WORLD_SIZE"]) / batch_num_loss_counted_tokens
-            accelerator.backward(loss)
+            '''the loss is a sum of all cross entropy losses for all tokens in the batch, we divide by batch_num_loss_counted_tokens to get the average loss per token'''
+            loss = loss * world_size / batch_num_loss_counted_tokens
+
+            loss.backward()
             torch.cuda.empty_cache()
 
             batch_totals.accumulate_minibatch_metrics(
@@ -80,22 +109,19 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
                 num_total_tokens=mb['input_ids'].shape[1],
                 num_samples=mb_num_samples,
                 loss=loss_metrics,
-                loss_backward=loss.detach().item()/int(os.environ["WORLD_SIZE"]),
+                loss_backward=loss.detach().item()/world_size,
                 time_per_minibatch=time.time() - mb_start_time,
             )
         step += 1
         #sum the metrics from all processes
-        batch_totals.reduce_batch_metrics(accelerator)
+        batch_totals.reduce_batch_metrics(device)
         
         #use accumulated metrics to take a gradient step and logging
         bm = batch_totals.totals
         total_samples_accumulated += bm['num_samples']
-        grad_norm = take_gradient_step(model, 
-                                       optimizer, 
-                                       lr_scheduler, 
-                                       accelerator)
+        grad_norm = take_gradient_step(model, optimizer, lr_scheduler)
 
-        if accelerator.is_main_process:
+        if is_main_process:
             batch_time = time.time() - batch_start_time
             batch_metrics = {
                     "step": step,
@@ -108,7 +134,7 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
                     "batch_num_loss_counted_tokens": batch_num_loss_counted_tokens,
                     "num_total_tokens": bm['num_total_tokens'],
                     "grad_accum": grad_accum+1,
-                    "avg_time_per_minibatch": bm['time_per_minibatch']/(grad_accum+1)/int(os.environ["WORLD_SIZE"]),
+                    "avg_time_per_minibatch": bm['time_per_minibatch']/(grad_accum+1)/world_size,
                     "time_per_batch": batch_time,
                     "tokens_per_second": bm['num_total_tokens']/batch_time,
                     "total_samples_accumulated": total_samples_accumulated, 
@@ -121,16 +147,8 @@ def train(model, optimizer, lr_scheduler, accelerator, data_loader, output_dir, 
         
         torch.distributed.barrier()
         if total_samples_accumulated - last_saved_samples >= min_samples_per_checkpoint:
-            save_model(model, accelerator, total_samples_accumulated, output_dir, model_name_or_path)
+            save_model(model, total_samples_accumulated, output_dir, model_name_or_path)
             last_saved_samples = total_samples_accumulated
-
-
-class FSDPShardingStrategyEnum(str, Enum):
-    NO_SHARD = "NO_SHARD"
-    SHARD_GRAD_OP = "SHARD_GRAD_OP"
-    FULL_SHARD = "FULL_SHARD"
-    HYBRID_SHARD = "HYBRID_SHARD"
-    _HYBRID_SHARD_ZERO2 = "_HYBRID_SHARD_ZERO2"
 
 class LogLevelEnum(str, Enum):
     DEBUG = "DEBUG"
@@ -148,11 +166,6 @@ def main(
     learning_rate: float = Option(5e-6, help="Peak learning rate"),
     num_warmup_steps: int = Option(10, help="Number of warmup steps for the LR scheduler"),
     lr_scheduler: str = Option("constant_with_warmup", help="Learning rate scheduler type"),
-    fsdp_sharding_strategy: FSDPShardingStrategyEnum = Option(
-        FSDPShardingStrategyEnum.HYBRID_SHARD, 
-        help="FSDP sharding strategy", 
-        case_sensitive=False
-    ),
     seed: int = Option(42, help="Random seed for reproducibility"),
     use_liger_kernels: bool = Option(False, help="Whether to use Liger kernels"),
     output_dir: str = Option(..., help="Directory to save checkpoints and logs (required)"),
@@ -178,7 +191,6 @@ def main(
             "learning_rate": learning_rate,
             "num_warmup_steps": num_warmup_steps,
             "lr_scheduler": lr_scheduler,
-            "fsdp_sharding_strategy": fsdp_sharding_strategy.value,
             "seed": seed,
             "use_liger_kernels": use_liger_kernels,
             "output_dir": output_dir,
@@ -197,11 +209,10 @@ def main(
     setup_logger(level=logging_level.value)
     model = setup_model(model_name_or_path=model_name_or_path,
                         use_liger_kernels=use_liger_kernels,)
-    model, accelerator,optimizer, lr_scheduler = setup_training_components(model,
+    model, optimizer, lr_scheduler = setup_training_components(model,
                                                                learning_rate=learning_rate,
                                                                num_warmup_steps=num_warmup_steps,
-                                                               lr_scheduler=lr_scheduler,
-                                                               fsdp_sharding_strategy=fsdp_sharding_strategy.value)
+                                                               lr_scheduler=lr_scheduler)
     data_loader = get_data_loader(data_path=data_path,
                                   batch_size=batch_size,
                                   max_tokens_per_gpu=max_tokens_per_gpu,
@@ -210,7 +221,6 @@ def main(
     train(model, 
           optimizer, 
           lr_scheduler, 
-          accelerator, 
           data_loader, 
           output_dir, 
           min_samples_per_checkpoint,
